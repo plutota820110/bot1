@@ -21,6 +21,7 @@ app = Flask(__name__)
 
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
+CRON_SECRET_KEY = os.getenv("CRON_SECRET_KEY", "abc123")  # fallback for testing
 
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
@@ -34,6 +35,14 @@ def callback():
     except InvalidSignatureError:
         abort(400)
     return 'OK'
+
+@app.route("/broadcast", methods=['GET'])
+def http_broadcast():
+    secret_key = request.args.get("key")
+    if secret_key != CRON_SECRET_KEY:
+        return "Unauthorized", 403
+    threading.Thread(target=broadcast_price_report).start()
+    return "Broadcast started"
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
@@ -131,14 +140,14 @@ def fetch_coconut_prices():
             if ul:
                 for li in ul.find_all("li"):
                     text = li.get_text(strip=True)
-                    match = re.match(r"(.+):US\$(\d+\.\d+)/KG,?\s*([-+]?\d+\.?\d*)%?\s*(up|down)?", text)
+                    match = re.match(r"(.+):US\\$(\\d+\\.\\d+)/KG,?\\s*([-+]?\\d+\\.?\\d*)%?\\s*(up|down)?", text)
                     if match:
                         region = match.group(1).strip()
                         price = float(match.group(2))
                         change = float(match.group(3))
                         if match.group(4) == "down":
                             change = -abs(change)
-                        date_match = re.search(r'([A-Za-z]+ \d{4})', text)
+                        date_match = re.search(r'([A-Za-z]+ \\d{4})', text)
                         date = date_match.group(1) if date_match else ""
                         result[region] = {"price": price, "change": change, "date": date}
         return result
