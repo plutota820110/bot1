@@ -48,7 +48,6 @@ def http_broadcast():
 def handle_message(event):
     text = event.message.text.strip()
 
-    # 自動記錄使用者 UID
     user_id = event.source.user_id
     try:
         existing_ids = set()
@@ -126,7 +125,6 @@ def broadcast_price_report():
     except Exception as e:
         print("❌ 群發失敗：", e)
 
-# === Selenium 建立器 ===
 def get_selenium_driver():
     options = Options()
     options.add_argument('--headless')
@@ -134,7 +132,6 @@ def get_selenium_driver():
     options.add_argument('--no-sandbox')
     return webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
 
-# === 資料抓取 ===
 def fetch_coconut_prices():
     url = "https://businessanalytiq.com/procurementanalytics/index/activated-charcoal-prices/"
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -174,12 +171,11 @@ def fetch_fred_from_ycharts():
     driver = get_selenium_driver()
     driver.get(url)
     try:
-        WebDriverWait(driver, 20).until(
-            EC.presence_of_all_elements_located((By.CSS_SELECTOR, "table.table"))
+        WebDriverWait(driver, 30).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "table.table"))
         )
         tables = driver.find_elements(By.CSS_SELECTOR, "table.table")
         data = {}
-
         for table in tables:
             rows = table.find_elements(By.TAG_NAME, "tr")
             for row in rows:
@@ -193,9 +189,12 @@ def fetch_fred_from_ycharts():
         period = data.get("Latest Period")
         change = data.get("Change from Last Month")
 
-        return period, latest_val, change
+        if latest_val and period:
+            return period, latest_val, change
+        else:
+            raise ValueError("必要資料欄位缺失")
     except Exception as e:
-        print("Error fetching FRED YCharts with Selenium:", e)
+        print("[FRED 抓取失敗]", e)
         return None, None, None
     finally:
         driver.quit()
