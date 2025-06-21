@@ -194,15 +194,30 @@ def fetch_bromine_details():
             EC.presence_of_element_located((By.CSS_SELECTOR, "table.tab2 tr"))
         )
         rows = driver.find_elements(By.CSS_SELECTOR, "table.tab2 tr")
-        data_rows = [row for row in rows if len(row.find_elements(By.TAG_NAME, "td")) >= 3]
-        if not data_rows:
-            return "❌ 找不到溴素資料列"
-        last_row = data_rows[-1]
-        tds = last_row.find_elements(By.TAG_NAME, "td")
-        date = tds[0].text.strip()
-        price = tds[1].text.strip()
-        percent = tds[2].text.strip()
-        return f"{date}：{price}（漲跌 {percent}）"
+        data_rows = [row for row in rows if len(row.find_elements(By.TAG_NAME, "td")) >= 2]
+        if len(data_rows) < 2:
+            return "❌ 找不到足夠的溴素資料列"
+
+        latest_row = data_rows[-1]
+        prev_row = data_rows[-2]
+
+        def parse_row(row):
+            tds = row.find_elements(By.TAG_NAME, "td")
+            date = tds[0].text.strip()
+            price_str = tds[1].text.strip().replace(",", "")
+            price = float(price_str) if price_str.replace('.', '', 1).isdigit() else None
+            return date, price
+
+        date1, price1 = parse_row(latest_row)
+        date2, price2 = parse_row(prev_row)
+
+        if price1 is None or price2 is None:
+            return "❌ 溴素價格解析失敗"
+
+        diff = price1 - price2
+        change_percent = (diff / price2) * 100 if price2 else 0
+        arrow = "⬆️" if change_percent > 0 else "⬇️"
+        return f"{date1}：{price1:.2f}（{arrow} {abs(change_percent):.2f}%）"
     except Exception as e:
         print("Error fetching bromine price:", e)
         return None
