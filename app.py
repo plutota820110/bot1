@@ -7,6 +7,7 @@ import threading
 import re
 from bs4 import BeautifulSoup
 import requests
+import sys
 
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -90,6 +91,17 @@ def build_price_report():
         reply += "溴素價格 ❌ 抓取失敗\n"
 
     return reply.strip()
+
+def broadcast_price_report():
+    try:
+        reply = build_price_report()
+        with open("users.txt", "r") as f:
+            user_ids = [line.strip() for line in f.readlines() if line.strip()]
+        for uid in user_ids:
+            line_bot_api.push_message(uid, TextSendMessage(text=reply))
+            print(f"✅ 已推播給 {uid}")
+    except Exception as e:
+        print("❌ 群發失敗：", e)
 
 # === Selenium 建立器 ===
 def get_selenium_driver():
@@ -212,4 +224,7 @@ def fetch_cnyes_energy2_close_price(name_keywords):
         driver.quit()
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    if len(sys.argv) > 1 and sys.argv[1] == "broadcast":
+        broadcast_price_report()
+    else:
+        app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
