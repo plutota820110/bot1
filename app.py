@@ -4,7 +4,6 @@ from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
 import os
 import threading
-import datetime
 import re
 from bs4 import BeautifulSoup
 import requests
@@ -25,51 +24,25 @@ LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-# === 全域快取 ===
-price_cache = {
-    "last_update": None,
-    "result": ""
-}
-
-@app.route("/callback", methods=['POST'])
-def callback():
-    signature = request.headers['X-Line-Signature']
-    body = request.get_data(as_text=True)
-    try:
-        handler.handle(body, signature)
-    except InvalidSignatureError:
-        abort(400)
-    return 'OK'
-
-@app.route("/update_cache", methods=['GET'])
-def update_cache():
-    global price_cache
-    try:
-        reply = build_price_report()
-        price_cache["last_update"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-        price_cache["result"] = reply
-        return "✅ Cache updated", 200
-    except Exception as e:
-        return f"❌ Cache update failed: {e}", 500
-
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     text = event.message.text.strip()
 
     if text in ["查價格", "價格", "椰殼價格", "煤炭價格", "溴素價格"]:
-        if price_cache["result"]:
-            reply = f"📈 目前快取於 {price_cache['last_update']}：\n\n{price_cache['result']}"
-        else:
-            reply = "⏳ 尚未快取任何價格資料"
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage(text=reply)
+            TextSendMessage(text="📡 查詢中，請稍候...")
         )
+        threading.Thread(target=send_price_result, args=(event.source.user_id,)).start()
     else:
         line_bot_api.reply_message(
             event.reply_token,
             TextSendMessage(text="請輸入「查價格」即可查詢椰殼活性碳、煤炭與溴素價格 📊")
         )
+
+def send_price_result(user_id):
+    reply = build_price_report()
+    line_bot_api.push_message(user_id, TextSendMessage(text=reply))
 
 def build_price_report():
     reply = ""
