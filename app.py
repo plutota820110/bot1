@@ -4,16 +4,22 @@ from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
 import os
 import threading
+
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 import requests
 from bs4 import BeautifulSoup
 import re
-import json
 
 app = Flask(__name__)
 
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
-
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
@@ -30,19 +36,19 @@ def callback():
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     text = event.message.text.strip()
-
     if text in ["查價格", "價格", "椰殼價格", "煤炭價格", "溴素價格"]:
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text="📡 查詢中，請稍候...")
-        )
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="📡 查詢中，請稍候..."))
         user_id = event.source.user_id
         threading.Thread(target=send_price_result, args=(user_id,)).start()
     else:
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text="請輸入「查價格」即可查詢椰殼活性碳、煤炭與溴素價格 📊")
-        )
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="請輸入「查價格」即可查詢椰殼活性碳、煤炭與溴素價格 📊"))
+
+def get_selenium_driver():
+    options = Options()
+    options.add_argument('--headless')
+    options.add_argument('--disable-gpu')
+    options.add_argument('--no-sandbox')
+    return webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
 
 def send_price_result(user_id):
     try:
@@ -80,95 +86,103 @@ def send_price_result(user_id):
         else:
             reply += "溴素價格 ❌ 抓取失敗\n"
 
-        line_bot_api.push_message(
-            user_id,
-            TextSendMessage(text=reply.strip())
-        )
-
+        line_bot_api.push_message(user_id, TextSendMessage(text=reply.strip()))
     except Exception as e:
         print("[錯誤] 背景推播失敗：", e)
 
 def fetch_coconut_prices():
     url = "https://businessanalytiq.com/procurementanalytics/index/activated-charcoal-prices/"
     headers = {"User-Agent": "Mozilla/5.0"}
-    response = requests.get(url, headers=headers)
-    soup = BeautifulSoup(response.text, "html.parser")
-
-    heading = None
-    for h3 in soup.find_all("h3"):
-        if "activated carbon price" in h3.text.lower():
-            heading = h3
-            break
-
-    prices = {}
-    if heading:
-        ul = heading.find_next_sibling("ul")
-        if ul:
-            for li in ul.find_all("li"):
-                text = li.get_text(strip=True)
-                match = re.match(r"(.+):US\$(\d+\.\d+)/KG,?\s*([-+]?\d+\.?\d*)%?\s*(up|down)?", text)
-                if match:
-                    region = match.group(1).strip()
-                    price = float(match.group(2))
-                    change = float(match.group(3))
-                    direction = match.group(4)
-                    if direction == "down":
-                        change = -abs(change)
-                    prices[region] = {"price": price, "change": change, "date": None}
-    return prices
-
-def fetch_fred_from_ycharts():
     try:
-        url = "https://ycharts.com/indicators/us_producer_price_index_coal_mining"
-        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
+        res = requests.get(url, headers=headers, timeout=10)
         soup = BeautifulSoup(res.text, "html.parser")
-
-        def get_val(label):
-            cell = soup.find("td", string=label)
-            return cell.find_next_sibling("td").text.strip() if cell else None
-
-        latest_val = get_val("Last Value")
-        latest_date = get_val("Latest Period")
-        change = get_val("Change from Last Month")
-
-        return latest_date, latest_val, change
+        result = {}
+        heading = next((h3 for h3 in soup.find_all("h3") if "activated carbon price" in h3.text.lower()), None)
+        if heading:
+            ul = heading.find_next_sibling("ul")
+            if ul:
+                for li in ul.find_all("li"):
+                    text = li.get_text(strip=True)
+                    match = re.match(r"(.+):US\$(\d+\.\d+)/KG,?\s*([-+]?\d+\.?\d*)%?\s*(up|down)?", text)
+                    if match:
+                        region = match.group(1).strip()
+                        price = float(match.group(2))
+                        change = float(match.group(3))
+                        if match.group(4) == "down":
+                            change = -abs(change)
+                        date_match = re.search(r'([A-Za-z]+ \d{4})', text)
+                        date = date_match.group(1) if date_match else ""
+                        result[region] = {"price": price, "change": change, "date": date}
+        return result
     except Exception as e:
-        print("[FRED error]", e)
-        return None, None, None
-
-def fetch_bromine_details():
-    url = "https://pdata.100ppi.com/?f=basket&dir=hghy&id=643"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    try:
-        res = requests.get(url, headers=headers)
-        json_text = re.search(r"var data=(\[{.*?}\]);", res.text)
-        if not json_text:
-            return None
-        data = json.loads(json_text.group(1))
-        latest = data[-1]
-        return f"{latest['date']}：{latest['value']}（漲跌 {latest['change']}）"
-    except Exception as e:
-        print("[Bromine Error]:", e)
+        print("Error fetching coconut price:", e)
         return None
 
-def fetch_cnyes_energy2_close_price(keywords):
+def fetch_fred_from_ycharts():
+    url = "https://ycharts.com/indicators/us_producer_price_index_coal_mining"
+    driver = get_selenium_driver()
+    driver.get(url)
     try:
-        url = "https://www.cnyes.com/futures/energy2.aspx"
-        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
-        soup = BeautifulSoup(res.text, "html.parser")
-
-        rows = soup.select("table tr")
+        WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.CSS_SELECTOR, "table.table tbody tr")))
+        rows = driver.find_elements(By.CSS_SELECTOR, "table.table tbody tr")
+        data = {}
         for row in rows:
-            cols = row.find_all("td")
-            if len(cols) >= 5 and any(k in cols[0].text for k in keywords):
-                title = cols[0].text.strip()
-                date = cols[1].text.strip()
-                close = cols[2].text.strip()
-                change = cols[3].text.strip()
-                return f"{title}：{date} 收盤價 {close}（漲跌 {change}）"
+            cells = row.find_elements(By.TAG_NAME, "td")
+            if len(cells) == 2:
+                data[cells[0].text.strip()] = cells[1].text.strip()
+        latest_val = data.get("Last Value")
+        period = data.get("Latest Period")
+        change = data.get("Change from Last Month")
+        return period, latest_val, change
+    except Exception as e:
+        print("Error fetching FRED YCharts with Selenium:", e)
+        return None, None, None
+    finally:
+        driver.quit()
+
+def fetch_bromine_details():
+    url = "https://pdata.100ppi.com/?f=basket&dir=hghy&id=643#hghy_643"
+    driver = get_selenium_driver()
+    driver.get(url)
+    try:
+        WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.CSS_SELECTOR, "table.tab2 tr")))
+        rows = driver.find_elements(By.CSS_SELECTOR, "table.tab2 tr")
+        data_rows = [row for row in rows if len(row.find_elements(By.TAG_NAME, "td")) >= 3]
+        if not data_rows:
+            return None
+        last_row = data_rows[-1]
+        tds = last_row.find_elements(By.TAG_NAME, "td")
+        date = tds[0].text.strip()
+        price = tds[1].text.strip()
+        percent = tds[2].text.strip()
+        return f"{date}：{price}（漲跌 {percent}）"
+    except Exception as e:
+        print("Error fetching bromine price:", e)
+        return None
+    finally:
+        driver.quit()
+
+def fetch_cnyes_energy2_close_price(keywords):
+    url = "https://www.cnyes.com/futures/energy2.aspx"
+    driver = get_selenium_driver()
+    driver.get(url)
+    try:
+        WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.CSS_SELECTOR, "table tr")))
+        rows = driver.find_elements(By.CSS_SELECTOR, "table tr")
+        for row in rows:
+            cells = row.find_elements(By.TAG_NAME, "td")
+            if len(cells) > 7:
+                name = cells[1].text.strip()
+                if any(k in name for k in keywords):
+                    date = cells[0].text.strip()
+                    close = cells[4].text.strip()
+                    change = cells[5].text.strip()
+                    return f"{name}：{date} 收盤價 {close}（漲跌 {change}）"
         return "❌ 未找到 " + "、".join(keywords)
     except Exception as e:
         return f"❌ 擷取失敗：{e}"
+    finally:
+        driver.quit()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
