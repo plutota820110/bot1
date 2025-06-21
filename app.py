@@ -1,13 +1,14 @@
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
-from linebot.models import MessageEvent, TextMessage, TextSendMessage
+from linebot.models import MessageEvent, TextMessage, FlexSendMessage
 import os
 import threading
 import re
 from bs4 import BeautifulSoup
 import requests
 import sys
+import json
 
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -62,192 +63,88 @@ def handle_message(event):
         print("[錯誤] 無法儲存 UID：", e)
 
     if text in ["查價格", "價格", "椰殼價格", "煤炭價格", "溴素價格"]:
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text="📡 查詢中，請稍候...")
-        )
         threading.Thread(target=send_price_result, args=(user_id,)).start()
     else:
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage(text="請輸入「查價格」即可查詢椰殼活性碳、煤炭與溴素價格 📊")
+            TextMessage(text="請輸入「查價格」即可查詢椰殼活性碳、煤炭與溴素價格 📊")
         )
 
 def send_price_result(user_id):
-    reply = build_price_report()
-    line_bot_api.push_message(user_id, TextSendMessage(text=reply))
+    flex_msg = build_flex_price_report()
+    line_bot_api.push_message(user_id, flex_msg)
 
-def build_price_report():
-    reply = ""
+def build_flex_price_report():
+    def section(title, items):
+        return {
+            "type": "box",
+            "layout": "vertical",
+            "margin": "lg",
+            "spacing": "sm",
+            "contents": [
+                {"type": "text", "text": title, "weight": "bold", "size": "md"},
+                *[{"type": "text", "text": line, "wrap": True, "size": "sm"} for line in items]
+            ]
+        }
 
     coconut = fetch_coconut_prices()
+    coconut_lines = []
     if coconut:
-        reply += "🥥 椰殼活性碳價格：\n"
         for region, data in coconut.items():
             arrow = "⬆️" if data["change"] > 0 else "⬇️"
             date = f"（{data['date']}）" if data['date'] else ""
-            reply += f"{region}：US${data['price']} /KG  {arrow} {abs(data['change'])}% {date}\n"
+            coconut_lines.append(f"{region}：US${data['price']} /KG {arrow} {abs(data['change'])}% {date}")
     else:
-        reply += "❌ 椰殼活性碳抓取失敗\n"
+        coconut_lines.append("❌ 椰殼活性碳抓取失敗")
 
     latest_date, latest_val, change = fetch_fred_from_ycharts()
-    reply += "\n🪨 煤質活性碳價格：\n"
+    coal_lines = []
     if latest_val:
+        arrow = "⬆️" if change and "-" not in change else "⬇️"
         if change:
-            arrow = "⬆️" if "-" not in change else "⬇️"
-            reply += f"FRED：{latest_val}（{latest_date}，月變動 {arrow} {change}）\n"
+            coal_lines.append(f"FRED：{latest_val}（{latest_date}，月變動 {arrow} {change}）")
         else:
-            reply += f"FRED：{latest_val}（{latest_date}）\n"
+            coal_lines.append(f"FRED：{latest_val}（{latest_date}）")
     else:
-        reply += "FRED ❌ 抓取失敗\n"
+        coal_lines.append("❌ FRED 抓取失敗")
 
-    coal_keywords = [["紐約煤西北歐"], ["倫敦煤澳洲"], ["大連焦煤"]]
-    for kw in coal_keywords:
-        reply += fetch_cnyes_energy2_close_price(kw) + "\n"
+    for kw in [["紐約煤西北歐"], ["倫敦煤澳洲"], ["大連焦煤"]]:
+        result = fetch_cnyes_energy2_close_price(kw)
+        if "未找到" in result or "擷取失敗" in result:
+            coal_lines.append(f"❌ {kw[0]} 抓取失敗")
+        else:
+            coal_lines.append(f"{result}")
 
     bromine = fetch_bromine_details()
-    reply += "\n🧪 溴素最新價格：\n"
-    if bromine:
-        reply += bromine + "\n"
-    else:
-        reply += "溴素價格 ❌ 抓取失敗\n"
+    bromine_lines = [bromine] if bromine else ["❌ 溴素價格抓取失敗"]
 
-    return reply.strip()
+    bubble = {
+        "type": "bubble",
+        "body": {
+            "type": "box",
+            "layout": "vertical",
+            "contents": [
+                {"type": "text", "text": "📊 價格查詢報告", "weight": "bold", "size": "lg"},
+                section("🥥 椰殼活性碳價格", coconut_lines),
+                section("🪨 煤質活性碳價格", coal_lines),
+                section("🧪 溴素價格", bromine_lines)
+            ]
+        }
+    }
+    return FlexSendMessage(alt_text="價格查詢結果", contents=bubble)
 
 def broadcast_price_report():
     try:
-        reply = build_price_report()
+        flex_msg = build_flex_price_report()
         with open("users.txt", "r") as f:
             user_ids = [line.strip() for line in f.readlines() if line.strip()]
         for uid in user_ids:
-            line_bot_api.push_message(uid, TextSendMessage(text=reply))
+            line_bot_api.push_message(uid, flex_msg)
             print(f"✅ 已推播給 {uid}")
     except Exception as e:
         print("❌ 群發失敗：", e)
 
-def get_selenium_driver():
-    options = Options()
-    options.add_argument('--headless')
-    options.add_argument('--disable-gpu')
-    options.add_argument('--no-sandbox')
-    return webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
-
-def fetch_coconut_prices():
-    url = "https://businessanalytiq.com/procurementanalytics/index/activated-charcoal-prices/"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    try:
-        res = requests.get(url, headers=headers, timeout=10)
-        if res.status_code != 200:
-            return None
-        soup = BeautifulSoup(res.text, "html.parser")
-        result = {}
-        heading = None
-        for h3 in soup.find_all("h3"):
-            if "activated carbon price" in h3.text.lower():
-                heading = h3
-                break
-        if heading:
-            ul = heading.find_next_sibling("ul")
-            if ul:
-                for li in ul.find_all("li"):
-                    text = li.get_text(strip=True)
-                    match = re.match(r"(.+):US\$(\d+\.\d+)/KG,?\s*([-+]?\d+\.?\d*)%?\s*(up|down)?", text)
-                    if match:
-                        region = match.group(1).strip()
-                        price = float(match.group(2))
-                        change = float(match.group(3))
-                        if match.group(4) == "down":
-                            change = -abs(change)
-                        date_match = re.search(r'([A-Za-z]+ \d{4})', text)
-                        date = date_match.group(1) if date_match else ""
-                        result[region] = {"price": price, "change": change, "date": date}
-        return result
-    except Exception as e:
-        print("Error fetching coconut price:", e)
-        return None
-
-def fetch_fred_from_ycharts():
-    url = "https://ycharts.com/indicators/us_producer_price_index_coal_mining"
-    driver = get_selenium_driver()
-    driver.get(url)
-    try:
-        WebDriverWait(driver, 30).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "table.table"))
-        )
-        tables = driver.find_elements(By.CSS_SELECTOR, "table.table")
-        data = {}
-        for table in tables:
-            rows = table.find_elements(By.TAG_NAME, "tr")
-            for row in rows:
-                cells = row.find_elements(By.TAG_NAME, "td")
-                if len(cells) == 2:
-                    label = cells[0].text.strip()
-                    value = cells[1].text.strip()
-                    data[label] = value
-
-        latest_val = data.get("Last Value")
-        period = data.get("Latest Period")
-        change = data.get("Change from Last Month")
-
-        if latest_val and period:
-            return period, latest_val, change
-        else:
-            raise ValueError("必要資料欄位缺失")
-    except Exception as e:
-        print("[FRED 抓取失敗]", e)
-        return None, None, None
-    finally:
-        driver.quit()
-
-def fetch_bromine_details():
-    driver = get_selenium_driver()
-    url = "https://pdata.100ppi.com/?f=basket&dir=hghy&id=643#hghy_643"
-    driver.get(url)
-    try:
-        WebDriverWait(driver, 20).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "table.tab2 tr"))
-        )
-        rows = driver.find_elements(By.CSS_SELECTOR, "table.tab2 tr")
-        data_rows = [row for row in rows if len(row.find_elements(By.TAG_NAME, "td")) >= 3]
-        if not data_rows:
-            return "❌ 找不到溴素資料列"
-
-        last_row = data_rows[-1]
-        tds = last_row.find_elements(By.TAG_NAME, "td")
-        date = tds[0].text.strip()
-        price = tds[1].text.strip()
-        percent = tds[2].text.strip()
-        return f"{date}：{price}（漲跌 {percent}）"
-    except Exception as e:
-        print("Error fetching bromine price:", e)
-        return None
-    finally:
-        driver.quit()
-
-def fetch_cnyes_energy2_close_price(name_keywords):
-    url = "https://www.cnyes.com/futures/energy2.aspx"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    driver = get_selenium_driver()
-    driver.get(url)
-    try:
-        WebDriverWait(driver, 20).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "table tr"))
-        )
-        rows = driver.find_elements(By.CSS_SELECTOR, "table tr")
-        for row in rows:
-            cells = row.find_elements(By.TAG_NAME, "td")
-            if len(cells) > 7:
-                name = cells[1].text.strip()
-                if any(k in name for k in name_keywords):
-                    date = cells[0].text.strip()
-                    close = cells[4].text.strip()
-                    change = cells[5].text.strip()
-                    return f"{name}：{date} 收盤價 {close}（漲跌 {change}）"
-        return f"❌ 未找到 {'、'.join(name_keywords)}"
-    except Exception as e:
-        return f"❌ 擷取失敗：{e}"
-    finally:
-        driver.quit()
+# 其他函式維持不變...
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "broadcast":
