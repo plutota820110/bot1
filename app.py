@@ -175,20 +175,24 @@ def fetch_fred_from_ycharts():
     driver.get(url)
     try:
         WebDriverWait(driver, 20).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "table.table tbody tr"))
+            EC.presence_of_all_elements_located((By.CSS_SELECTOR, "table.table"))
         )
-        rows = driver.find_elements(By.CSS_SELECTOR, "table.table tbody tr")
+        tables = driver.find_elements(By.CSS_SELECTOR, "table.table")
         data = {}
-        for row in rows:
-            cells = row.find_elements(By.TAG_NAME, "td")
-            if len(cells) == 2:
-                label = cells[0].text.strip()
-                value = cells[1].text.strip()
-                data[label] = value
+
+        for table in tables:
+            rows = table.find_elements(By.TAG_NAME, "tr")
+            for row in rows:
+                cells = row.find_elements(By.TAG_NAME, "td")
+                if len(cells) == 2:
+                    label = cells[0].text.strip()
+                    value = cells[1].text.strip()
+                    data[label] = value
 
         latest_val = data.get("Last Value")
         period = data.get("Latest Period")
         change = data.get("Change from Last Month")
+
         return period, latest_val, change
     except Exception as e:
         print("Error fetching FRED YCharts with Selenium:", e)
