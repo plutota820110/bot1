@@ -12,14 +12,12 @@ from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-import requests
-from bs4 import BeautifulSoup
-import re
 
 app = Flask(__name__)
 
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
+
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
@@ -36,19 +34,19 @@ def callback():
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     text = event.message.text.strip()
+
     if text in ["查價格", "價格", "椰殼價格", "煤炭價格", "溴素價格"]:
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="📡 查詢中，請稍候..."))
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text="📡 查詢中，請稍候...")
+        )
         user_id = event.source.user_id
         threading.Thread(target=send_price_result, args=(user_id,)).start()
     else:
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="請輸入「查價格」即可查詢椰殼活性碳、煤炭與溴素價格 📊"))
-
-def get_selenium_driver():
-    options = Options()
-    options.add_argument('--headless')
-    options.add_argument('--disable-gpu')
-    options.add_argument('--no-sandbox')
-    return webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text="請輸入「查價格」即可查詢椰殼活性碳、煤炭與溴素價格 📊")
+        )
 
 def send_price_result(user_id):
     try:
@@ -86,9 +84,20 @@ def send_price_result(user_id):
         else:
             reply += "溴素價格 ❌ 抓取失敗\n"
 
-        line_bot_api.push_message(user_id, TextSendMessage(text=reply.strip()))
+        line_bot_api.push_message(
+            user_id,
+            TextSendMessage(text=reply.strip())
+        )
+
     except Exception as e:
         print("[錯誤] 背景推播失敗：", e)
+
+def get_selenium_driver():
+    options = Options()
+    options.add_argument('--headless')
+    options.add_argument('--disable-gpu')
+    options.add_argument('--no-sandbox')
+    return webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
 
 def fetch_coconut_prices():
     url = "https://businessanalytiq.com/procurementanalytics/index/activated-charcoal-prices/"
@@ -97,7 +106,11 @@ def fetch_coconut_prices():
         res = requests.get(url, headers=headers, timeout=10)
         soup = BeautifulSoup(res.text, "html.parser")
         result = {}
-        heading = next((h3 for h3 in soup.find_all("h3") if "activated carbon price" in h3.text.lower()), None)
+        heading = None
+        for h3 in soup.find_all("h3"):
+            if "activated carbon price" in h3.text.lower():
+                heading = h3
+                break
         if heading:
             ul = heading.find_next_sibling("ul")
             if ul:
@@ -123,13 +136,18 @@ def fetch_fred_from_ycharts():
     driver = get_selenium_driver()
     driver.get(url)
     try:
-        WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.CSS_SELECTOR, "table.table tbody tr")))
+        WebDriverWait(driver, 20).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "table.table tbody tr"))
+        )
         rows = driver.find_elements(By.CSS_SELECTOR, "table.table tbody tr")
         data = {}
         for row in rows:
             cells = row.find_elements(By.TAG_NAME, "td")
             if len(cells) == 2:
-                data[cells[0].text.strip()] = cells[1].text.strip()
+                label = cells[0].text.strip()
+                value = cells[1].text.strip()
+                data[label] = value
+
         latest_val = data.get("Last Value")
         period = data.get("Latest Period")
         change = data.get("Change from Last Month")
@@ -141,15 +159,18 @@ def fetch_fred_from_ycharts():
         driver.quit()
 
 def fetch_bromine_details():
-    url = "https://pdata.100ppi.com/?f=basket&dir=hghy&id=643#hghy_643"
     driver = get_selenium_driver()
+    url = "https://pdata.100ppi.com/?f=basket&dir=hghy&id=643#hghy_643"
     driver.get(url)
     try:
-        WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.CSS_SELECTOR, "table.tab2 tr")))
+        WebDriverWait(driver, 20).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "table.tab2 tr"))
+        )
         rows = driver.find_elements(By.CSS_SELECTOR, "table.tab2 tr")
         data_rows = [row for row in rows if len(row.find_elements(By.TAG_NAME, "td")) >= 3]
         if not data_rows:
-            return None
+            return "❌ 找不到溴素資料列"
+
         last_row = data_rows[-1]
         tds = last_row.find_elements(By.TAG_NAME, "td")
         date = tds[0].text.strip()
@@ -162,23 +183,25 @@ def fetch_bromine_details():
     finally:
         driver.quit()
 
-def fetch_cnyes_energy2_close_price(keywords):
+def fetch_cnyes_energy2_close_price(name_keywords):
     url = "https://www.cnyes.com/futures/energy2.aspx"
     driver = get_selenium_driver()
     driver.get(url)
     try:
-        WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.CSS_SELECTOR, "table tr")))
+        WebDriverWait(driver, 20).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "table tr"))
+        )
         rows = driver.find_elements(By.CSS_SELECTOR, "table tr")
         for row in rows:
             cells = row.find_elements(By.TAG_NAME, "td")
             if len(cells) > 7:
                 name = cells[1].text.strip()
-                if any(k in name for k in keywords):
+                if any(k in name for k in name_keywords):
                     date = cells[0].text.strip()
                     close = cells[4].text.strip()
                     change = cells[5].text.strip()
                     return f"{name}：{date} 收盤價 {close}（漲跌 {change}）"
-        return "❌ 未找到 " + "、".join(keywords)
+        return "❌ 未找到 " + "、".join(name_keywords)
     except Exception as e:
         return f"❌ 擷取失敗：{e}"
     finally:
