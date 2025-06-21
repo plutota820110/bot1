@@ -21,7 +21,7 @@ app = Flask(__name__)
 
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
-CRON_SECRET_KEY = os.getenv("CRON_SECRET_KEY", "abc123")  # fallback for testing
+CRON_SECRET_KEY = os.getenv("CRON_SECRET_KEY", "abc123")
 
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
@@ -48,12 +48,26 @@ def http_broadcast():
 def handle_message(event):
     text = event.message.text.strip()
 
+    # 自動記錄使用者 UID
+    user_id = event.source.user_id
+    try:
+        existing_ids = set()
+        if os.path.exists("users.txt"):
+            with open("users.txt", "r") as f:
+                existing_ids = set(line.strip() for line in f)
+        if user_id not in existing_ids:
+            with open("users.txt", "a") as f:
+                f.write(user_id + "\n")
+                print(f"[✅] 已新增使用者 UID：{user_id}")
+    except Exception as e:
+        print("[錯誤] 無法儲存 UID：", e)
+
     if text in ["查價格", "價格", "椰殼價格", "煤炭價格", "溴素價格"]:
         line_bot_api.reply_message(
             event.reply_token,
             TextSendMessage(text="📡 查詢中，請稍候...")
         )
-        threading.Thread(target=send_price_result, args=(event.source.user_id,)).start()
+        threading.Thread(target=send_price_result, args=(user_id,)).start()
     else:
         line_bot_api.reply_message(
             event.reply_token,
@@ -140,14 +154,14 @@ def fetch_coconut_prices():
             if ul:
                 for li in ul.find_all("li"):
                     text = li.get_text(strip=True)
-                    match = re.match(r"(.+):US\\$(\\d+\\.\\d+)/KG,?\\s*([-+]?\\d+\\.?\\d*)%?\\s*(up|down)?", text)
+                    match = re.match(r"(.+):US\$(\d+\.\d+)/KG,?\s*([-+]?\d+\.?\d*)%?\s*(up|down)?", text)
                     if match:
                         region = match.group(1).strip()
                         price = float(match.group(2))
                         change = float(match.group(3))
                         if match.group(4) == "down":
                             change = -abs(change)
-                        date_match = re.search(r'([A-Za-z]+ \\d{4})', text)
+                        date_match = re.search(r'([A-Za-z]+ \d{4})', text)
                         date = date_match.group(1) if date_match else ""
                         result[region] = {"price": price, "change": change, "date": date}
         return result
