@@ -197,14 +197,23 @@ def fetch_bromine_details():
         )
         rows = driver.find_elements(By.CSS_SELECTOR, "table.tab2 tr")
         data_rows = [row for row in rows if len(row.find_elements(By.TAG_NAME, "td")) >= 3]
-        if not data_rows:
-            return "❌ 找不到溴素資料列"
+        if len(data_rows) < 2:
+            return "❌ 溴素資料不足"
+
+        # 最新與前一次
         last_row = data_rows[-1]
-        tds = last_row.find_elements(By.TAG_NAME, "td")
-        date = tds[0].text.strip()
-        price = tds[1].text.strip()
-        percent = tds[2].text.strip()
-        return f"{date}：{price}（漲跌 {percent}）"
+        prev_row = data_rows[-2]
+        last_tds = last_row.find_elements(By.TAG_NAME, "td")
+        prev_tds = prev_row.find_elements(By.TAG_NAME, "td")
+
+        date = last_tds[0].text.strip()
+        last_price = float(last_tds[1].text.strip().replace(',', ''))
+        prev_price = float(prev_tds[1].text.strip().replace(',', ''))
+
+        change_percent = ((last_price - prev_price) / prev_price) * 100 if prev_price != 0 else 0
+        arrow = "⬆️" if change_percent > 0 else ("⬇️" if change_percent < 0 else "➡️")
+
+        return f"{date}：{last_price:.2f}（{arrow} {abs(change_percent):.2f}%）"
     except Exception as e:
         print("Error fetching bromine price:", e)
         return None
