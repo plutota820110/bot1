@@ -170,24 +170,19 @@ def fetch_coconut_prices():
             return None
         soup = BeautifulSoup(res.text, "html.parser")
         result = {}
-        heading = None
-        for h3 in soup.find_all("h3"):
-            if "activated carbon price" in h3.text.lower():
-                heading = h3
-                break
-        if heading:
-            ul = heading.find_next_sibling("ul")
-            if ul:
-                for li in ul.find_all("li"):
+        for section in soup.select("section"):
+            h3 = section.find("h3")
+            if h3 and "activated carbon price" in h3.text.lower():
+                for li in section.select("ul > li"):
                     text = li.get_text(strip=True)
-                    match = re.match(r"(.+):US\\$(\\d+\\.\\d+)/KG,?\\s*([-+]?\\d+\\.?\\d*)%?\\s*(up|down)?", text)
+                    match = re.match(r"(.+):US\$(\d+\.\d+)/KG,?\s*([-+]?\d+\.?\d*)%?\s*(up|down)?", text)
                     if match:
                         region = match.group(1).strip()
                         price = float(match.group(2))
                         change = float(match.group(3))
                         if match.group(4) == "down":
                             change = -abs(change)
-                        date_match = re.search(r'([A-Za-z]+ \\d{4})', text)
+                        date_match = re.search(r'([A-Za-z]+ \d{4})', text)
                         date = date_match.group(1) if date_match else ""
                         result[region] = {"price": price, "change": change, "date": date}
         return result
@@ -201,27 +196,23 @@ def fetch_fred_from_ycharts():
     driver.get(url)
     try:
         WebDriverWait(driver, 30).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "table.table"))
+            EC.presence_of_all_elements_located((By.CSS_SELECTOR, "table.table tbody tr"))
         )
-        tables = driver.find_elements(By.CSS_SELECTOR, "table.table")
+        rows = driver.find_elements(By.CSS_SELECTOR, "table.table tbody tr")
         data = {}
-        for table in tables:
-            rows = table.find_elements(By.TAG_NAME, "tr")
-            for row in rows:
-                cells = row.find_elements(By.TAG_NAME, "td")
-                if len(cells) == 2:
-                    label = cells[0].text.strip()
-                    value = cells[1].text.strip()
-                    data[label] = value
-
+        for row in rows:
+            tds = row.find_elements(By.TAG_NAME, "td")
+            if len(tds) == 2:
+                key = tds[0].text.strip()
+                val = tds[1].text.strip()
+                data[key] = val
         latest_val = data.get("Last Value")
         period = data.get("Latest Period")
         change = data.get("Change from Last Month")
-
         if latest_val and period:
             return period, latest_val, change
         else:
-            raise ValueError("必要資料欄位缺失")
+            raise ValueError("必要資料缺失")
     except Exception as e:
         print("[FRED 抓取失敗]", e)
         return None, None, None
