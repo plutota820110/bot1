@@ -1,3 +1,5 @@
+
+
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
@@ -48,6 +50,7 @@ def http_broadcast():
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     text = event.message.text.strip()
+
     user_id = event.source.user_id
     try:
         existing_ids = set()
@@ -107,9 +110,12 @@ def build_flex_price_report():
     else:
         coal_lines.append("❌ FRED 抓取失敗")
 
-    coal_lines.append(fetch_cnyes_energy2_price("紐約煤西北歐"))
-    coal_lines.append(fetch_cnyes_energy2_price("倫敦煤澳洲"))
-    coal_lines.append(fetch_cnyes_energy2_price("大連焦煤"))
+    for kw in [["紐約煤西北歐"], ["倫敦煤澳洲"], ["大連焦煤"]]:
+        result = fetch_cnyes_energy2_close_price(kw)
+        if "未找到" in result or "擷取失敗" in result:
+            coal_lines.append(f"❌ {kw[0]} 抓取失敗")
+        else:
+            coal_lines.append(f"{result}")
 
     bromine = fetch_bromine_details()
     bromine_lines = [bromine] if bromine else ["❌ 溴素價格抓取失敗"]
@@ -129,30 +135,16 @@ def build_flex_price_report():
     }
     return FlexSendMessage(alt_text="價格查詢結果", contents=bubble)
 
-def fetch_cnyes_energy2_price(keyword):
-    url = "https://www.cnyes.com/futures/energy2.aspx"
-    driver = get_selenium_driver()
-    driver.get(url)
+def broadcast_price_report():
     try:
-        WebDriverWait(driver, 20).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "table tr"))
-        )
-        rows = driver.find_elements(By.CSS_SELECTOR, "table tr")
-        for row in rows:
-            cells = row.find_elements(By.TAG_NAME, "td")
-            if len(cells) > 7:
-                name = cells[1].text.strip()
-                if keyword in name:
-                    date = cells[0].text.strip()
-                    close = cells[4].text.strip()
-                    percent = cells[6].text.strip()
-                    arrow = "⬆️" if "-" not in percent else "⬇️"
-                    return f"近月{name}：{date} 收盤價 {close}（{arrow} {percent}）"
-        return f"❌ {keyword} 抓取失敗"
+        flex_msg = build_flex_price_report()
+        with open("users.txt", "r") as f:
+            user_ids = [line.strip() for line in f.readlines() if line.strip()]
+        for uid in user_ids:
+            line_bot_api.push_message(uid, flex_msg)
+            print(f"✅ 已推播給 {uid}")
     except Exception as e:
-        return f"❌ {keyword} 擷取失敗：{e}"
-    finally:
-        driver.quit()
+        print("❌ 群發失敗：", e)
 
 def get_selenium_driver():
     options = Options()
@@ -170,10 +162,15 @@ def fetch_coconut_prices():
             return None
         soup = BeautifulSoup(res.text, "html.parser")
         result = {}
-        for section in soup.select("section"):
-            h3 = section.find("h3")
-            if h3 and "activated carbon price" in h3.text.lower():
-                for li in section.select("ul > li"):
+        heading = None
+        for h3 in soup.find_all("h3"):
+            if "activated carbon price" in h3.text.lower():
+                heading = h3
+                break
+        if heading:
+            ul = heading.find_next_sibling("ul")
+            if ul:
+                for li in ul.find_all("li"):
                     text = li.get_text(strip=True)
                     match = re.match(r"(.+):US\$(\d+\.\d+)/KG,?\s*([-+]?\d+\.?\d*)%?\s*(up|down)?", text)
                     if match:
@@ -187,41 +184,12 @@ def fetch_coconut_prices():
                         result[region] = {"price": price, "change": change, "date": date}
         return result
     except Exception as e:
-        print("[椰殼價格抓取失敗]", e)
+        print("Error fetching coconut price:", e)
         return None
 
-def fetch_fred_from_ycharts():
-    url = "https://ycharts.com/indicators/us_producer_price_index_coal_mining"
-    driver = get_selenium_driver()
-    driver.get(url)
-    try:
-        WebDriverWait(driver, 30).until(
-            EC.presence_of_all_elements_located((By.CSS_SELECTOR, "table.table tbody tr"))
-        )
-        rows = driver.find_elements(By.CSS_SELECTOR, "table.table tbody tr")
-        data = {}
-        for row in rows:
-            tds = row.find_elements(By.TAG_NAME, "td")
-            if len(tds) == 2:
-                key = tds[0].text.strip()
-                val = tds[1].text.strip()
-                data[key] = val
-        latest_val = data.get("Last Value")
-        period = data.get("Latest Period")
-        change = data.get("Change from Last Month")
-        if latest_val and period:
-            return period, latest_val, change
-        else:
-            raise ValueError("必要資料缺失")
-    except Exception as e:
-        print("[FRED 抓取失敗]", e)
-        return None, None, None
-    finally:
-        driver.quit()
-
 def fetch_bromine_details():
-    url = "https://pdata.100ppi.com/?f=basket&dir=hghy&id=643#hghy_643"
     driver = get_selenium_driver()
+    url = "https://pdata.100ppi.com/?f=basket&dir=hghy&id=643#hghy_643"
     driver.get(url)
     try:
         WebDriverWait(driver, 20).until(
@@ -229,33 +197,70 @@ def fetch_bromine_details():
         )
         rows = driver.find_elements(By.CSS_SELECTOR, "table.tab2 tr")
         data_rows = [row for row in rows if len(row.find_elements(By.TAG_NAME, "td")) >= 3]
-        if len(data_rows) < 2:
-            return None
+        if not data_rows:
+            return "❌ 找不到溴素資料列"
         last_row = data_rows[-1]
-        prev_row = data_rows[-2]
-        last_price = float(last_row.find_elements(By.TAG_NAME, "td")[1].text.strip())
-        prev_price = float(prev_row.find_elements(By.TAG_NAME, "td")[1].text.strip())
-        change_percent = round((last_price - prev_price) / prev_price * 100, 2)
-        arrow = "⬆️" if change_percent > 0 else "⬇️"
-        date = last_row.find_elements(By.TAG_NAME, "td")[0].text.strip()
-        return f"{date}：{last_price:.2f}（{arrow} {abs(change_percent)}%）"
+        tds = last_row.find_elements(By.TAG_NAME, "td")
+        date = tds[0].text.strip()
+        price = tds[1].text.strip()
+        percent = tds[2].text.strip()
+        return f"{date}：{price}（漲跌 {percent}）"
     except Exception as e:
-        print("[溴素價格抓取失敗]", e)
+        print("Error fetching bromine price:", e)
         return None
     finally:
         driver.quit()
 
-def broadcast_price_report():
+def fetch_cnyes_energy2_close_price(name_keywords):
+    url = "https://www.cnyes.com/futures/energy2.aspx"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    driver = get_selenium_driver()
+    driver.get(url)
     try:
-        if not os.path.exists("users.txt"):
-            return
-        with open("users.txt", "r") as f:
-            user_ids = [line.strip() for line in f if line.strip()]
-        flex_msg = build_flex_price_report()
-        for uid in user_ids:
-            line_bot_api.push_message(uid, flex_msg)
+        WebDriverWait(driver, 20).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "table tr"))
+        )
+        rows = driver.find_elements(By.CSS_SELECTOR, "table tr")
+        for row in rows:
+            cells = row.find_elements(By.TAG_NAME, "td")
+            if len(cells) > 7:
+                name = cells[1].text.strip()
+                if any(k in name for k in name_keywords):
+                    date = cells[0].text.strip()
+                    close = cells[4].text.strip()
+                    change = cells[5].text.strip()
+                    return f"{name}：{date} 收盤價 {close}（漲跌 {change}）"
+        return "❌ 未找到指定煤種資料"
     except Exception as e:
-        print("[錯誤] 群發失敗：", e)
+        return f"❌ 擷取失敗：{e}"
+    finally:
+        driver.quit()
+
+def fetch_fred_from_ycharts():
+    url = "https://ycharts.com/indicators/us_producer_price_index_coal_mining"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    try:
+        res = requests.get(url, headers=headers, timeout=15)
+        if res.status_code != 200:
+            return None, None, None
+        soup = BeautifulSoup(res.text, "html.parser")
+        tables = soup.find_all("table", class_="table")
+        if len(tables) < 2:
+            print("❌ 沒找到足夠的資料表")
+            return None, None, None
+        data = {}
+        for table in tables:
+            rows = table.find_all("tr")
+            for row in rows:
+                cols = row.find_all("td")
+                if len(cols) == 2:
+                    key = cols[0].text.strip()
+                    value = cols[1].text.strip()
+                    data[key] = value
+        return data.get("Latest Period"), data.get("Last Value"), data.get("Change from Last Month")
+    except Exception as e:
+        print("Error fetching FRED from ycharts:", e)
+        return None, None, None
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "broadcast":
