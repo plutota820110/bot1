@@ -228,8 +228,9 @@ def fetch_cnyes_energy2_close_price(name_keywords):
                 if any(k in name for k in name_keywords):
                     date = cells[0].text.strip()
                     close = cells[4].text.strip()
-                    change = cells[5].text.strip()
-                    return f"{name}：{date} 收盤價 {close}（漲跌 {change}）"
+                    percent = cells[6].text.strip().replace('%', '')  # 抓漲跌百分比
+                    arrow = "⬆️" if "-" not in percent and percent != "0.00" else "⬇️"
+                    return f"近月{name}：{date} 收盤價 {close}（{arrow} {percent}%）"
         return "❌ 未找到指定煤種資料"
     except Exception as e:
         return f"❌ 擷取失敗：{e}"
