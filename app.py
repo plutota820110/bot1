@@ -181,7 +181,12 @@ def fetch_coconut_prices():
                             change = -abs(change)
                         date_match = re.search(r'([A-Za-z]+ \d{4})', text)
                         date = date_match.group(1) if date_match else ""
-                        result[region] = {"price": price, "change": change, "date": date}
+                        arrow = "⬆️" if change > 0 else ("⬇️" if change < 0 else "➡️")
+                        result[region] = {
+                            "line": f"{region}：US${price:.2f} /KG {arrow} {abs(change):.2f}%（{date}）",
+                            "is_rising": change > 0,
+                            "label": f"椰殼活性碳 {region}"
+                        }
         return result
     except Exception as e:
         print("Error fetching coconut price:", e)
@@ -198,7 +203,7 @@ def fetch_bromine_details():
         rows = driver.find_elements(By.CSS_SELECTOR, "table.tab2 tr")
         data_rows = [row for row in rows if len(row.find_elements(By.TAG_NAME, "td")) >= 3]
         if len(data_rows) < 2:
-            return "❌ 找不到溴素資料列"
+            return {"line": "❌ 找不到溴素資料列", "is_rising": False, "label": "溴素"}
 
         last_row = data_rows[-1]
         second_last_row = data_rows[-2]
@@ -213,10 +218,15 @@ def fetch_bromine_details():
         change_percent = ((last_price - prev_price) / prev_price) * 100 if prev_price != 0 else 0
         arrow = "⬆️" if change_percent > 0 else ("⬇️" if change_percent < 0 else "➡️")
 
-        return f"{last_date}：{last_price:.2f}（{arrow} {abs(change_percent):.2f}%）"
+        result = {
+            "line": f"{last_date}：{last_price:.2f}（{arrow} {abs(change_percent):.2f}%）",
+            "is_rising": change_percent > 0,
+            "label": "溴素"
+        }
+        return result
     except Exception as e:
         print("Error fetching bromine price:", e)
-        return None
+        return {"line": "❌ 擷取溴素失敗", "is_rising": False, "label": "溴素"}
     finally:
         driver.quit()
 
@@ -236,13 +246,23 @@ def fetch_cnyes_energy2_close_price(name_keywords):
                 name = cells[1].text.strip()
                 if any(k in name for k in name_keywords):
                     date = cells[0].text.strip()
-                    close = cells[4].text.strip()
-                    percent = cells[6].text.strip().replace('%', '')  # 抓漲跌百分比
-                    arrow = "⬆️" if "-" not in percent and percent != "0.00" else "⬇️"
-                    return f"近月{name}：{date} 收盤價 {close}（{arrow} {percent}%）"
-        return "❌ 未找到指定煤種資料"
+                    close = cells[4].text.strip().replace(',', '').replace('--', '')
+                    percent = cells[6].text.strip().replace('%', '').replace('--', '')
+                    try:
+                        close_val = float(close)
+                        change_percent = float(percent)
+                        arrow = "⬆️" if change_percent > 0 else ("⬇️" if change_percent < 0 else "➡️")
+                        entry = {
+                            "line": f"近月{name}：{date} 收盤價 {close_val:.2f}（{arrow} {abs(change_percent):.2f}%）",
+                            "is_rising": change_percent > 0,
+                            "label": name
+                        }
+                        return entry
+                    except ValueError:
+                        return {"line": f"❌ 數值轉換錯誤（{name}）", "is_rising": False, "label": name}
+        return {"line": "❌ 未找到指定煤種資料", "is_rising": False, "label": ""}
     except Exception as e:
-        return f"❌ 擷取失敗：{e}"
+        return {"line": f"❌ 擷取失敗：{e}", "is_rising": False, "label": ""}
     finally:
         driver.quit()
 
